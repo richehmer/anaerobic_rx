@@ -10,7 +10,7 @@ class DevicesScreen extends StatelessWidget {
   Widget build(BuildContext context) {
     return new Scaffold(
       appBar: new AppBar(
-        title: new Text("Second Screen"),
+        title: new Text("Select HR Monitor"),
       ),
       body: new DevicesList(),
     );
@@ -31,23 +31,27 @@ class _DevicesListState extends State<DevicesList> {
 
   List<blue.ScanResult> _devices = [];
 
-  StreamSubscription<List<blue.ScanResult>> subscription;
+  StreamSubscription subscription;
 
   @override
   void initState() {
     super.initState();
-    subscription = _deviceManager.devices().stream.toList().asStream().listen(
-        (List<blue.ScanResult> events) {
+    subscription =
+        _deviceManager.devices(8).stream.listen((blue.ScanResult events) {
       setState(() {
         _loading = false;
-        _devices.addAll(events);
+        _devices.add(events);
       });
-    }, onDone: () {});
+    }, onDone: () {
+      debugPrint("subscription done");
+    });
   }
 
   @override
   void dispose() {
-    subscription.cancel().then((value) => debugPrint('disposed bluetoothsearch!'));
+    subscription
+        .cancel()
+        .then((value) => debugPrint('disposed bluetoothsearch!'));
     super.dispose();
   }
 
@@ -82,7 +86,7 @@ class _DevicesListState extends State<DevicesList> {
 }
 
 abstract class DeviceManager {
-  Observable<blue.ScanResult> devices();
+  Observable<blue.ScanResult> devices(int timeoutSeconds);
 
   Observable<int> connect(blue.BluetoothDevice device);
 
@@ -121,28 +125,36 @@ class BluetoothDeviceManager extends DeviceManager {
           seedValue: Optional.empty());
 
   @override
-  Observable<blue.ScanResult> devices() {
+  Observable<blue.ScanResult> devices(int timeoutSeconds) {
     var bt = blue.FlutterBlue.instance;
-    return new Observable(bt.scan(
-      withServices: [blue.Guid(HR_SERVICE)],
-      timeout: const Duration(seconds: 6),
-    )).distinctUnique(equals: (a, b) {
+
+    var scanStream = timeoutSeconds > 0
+        ? bt.scan(
+            withServices: [blue.Guid(HR_SERVICE)],
+            timeout: Duration(seconds: timeoutSeconds),
+          )
+        : bt.scan();
+    return new Observable(scanStream)
+        .delay(Duration(milliseconds: 700))
+        .distinctUnique(equals: (a, b) {
       var firstId = a.device.id.toString();
       var secondId = b.device.id.toString();
       return firstId == secondId;
     }, hashCode: (result) {
       return result.device.id.hashCode;
-    });
+    }).doOnDone(() => debugPrint('done with scan stream'));
   }
 
   @override
   void setPrimaryDevice(blue.BluetoothDevice device) {
+    debugPrint('seting primary device');
     primaryDeviceSubject.add(Optional.ofNullable(device));
   }
 
   @override
   Observable<Optional<blue.BluetoothDevice>> primaryDevice() {
-    return primaryDeviceSubject.stream;
+    return primaryDeviceSubject.stream
+        .doOnData((event) => debugPrint('emitting new primary device'));
   } //  @override
 
   @override
@@ -173,6 +185,7 @@ class BluetoothDeviceManager extends DeviceManager {
               });
             })
             .doOnDone(() => debugPrint('stream done!'))
+            .doOnCancel(() => debugPrint('stream cancel!!'))
             .doOnError((error) {
               debugPrint("problem streaming HR: " + error.toString());
             });
@@ -185,6 +198,7 @@ class BluetoothDeviceManager extends DeviceManager {
   @override
   Stream<int> connectStream(blue.BluetoothDevice btDevice) {
     var bt = blue.FlutterBlue.instance;
+    debugPrint('connecting to stream');
     return bt
         .connect(btDevice)
         .skipWhile((state) => state != blue.BluetoothDeviceState.connected)
@@ -194,13 +208,14 @@ class BluetoothDeviceManager extends DeviceManager {
         .map((hrService) => hrService.characteristics
             .firstWhere((char) => char.uuid == blue.Guid(HR_MEASUREMENT)))
         .asyncExpand((char) {
-          debugPrint("async expand");
+      debugPrint("async expand");
       return btDevice
           .setNotifyValue(char, true)
           .asStream()
           .where((success) => success)
           .asyncExpand((_) => btDevice.onValueChanged(char))
-          .map((valueList) => valueList[1]);
+          .map((valueList) => valueList[1])
+          .handleError((error) => debugPrint('stream error!'));
     });
   }
 }

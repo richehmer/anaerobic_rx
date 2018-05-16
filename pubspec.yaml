@@ -5,9 +5,12 @@ dependencies:
   flutter:
     sdk: flutter
   charts_flutter:
+  path_provider:
   flutter_blue:
+    path: ../flutter_blue/
   rxdart:
-  optional: "^1.2.3+1"
+  optional: #"^1.2.3+1"
+    path: ../../Clones/optional.dart/
 
 
   # The following adds the Cupertino Icons font to your application.

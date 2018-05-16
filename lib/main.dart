@@ -1,8 +1,11 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:optional/optional.dart';
 import 'data.dart';
 import 'package:charts_flutter/flutter.dart' as charts;
 import 'package:flutter_blue/flutter_blue.dart';
+import 'package:path_provider/path_provider.dart' as path;
 import 'dart:math';
 import 'dependency_injection.dart';
 import 'devices.dart';
@@ -54,14 +57,8 @@ class MyHomePage extends StatefulWidget {
 }
 
 class _MyHomePageState extends State<MyHomePage> {
-  int _counter = 0;
+  bool _waiting = false;
   List<ClicksOverTime> _data = [];
-
-  List<ClicksOverTime> _null_data = [
-    ClicksOverTime(new DateTime.now(), 0),
-  ];
-
-  List<ClicksOverTime> _window = _getCurWindow();
 
   String _curDeviceName;
 
@@ -69,13 +66,6 @@ class _MyHomePageState extends State<MyHomePage> {
   var startHighlight;
 
   var ran = new Random();
-
-  static List<ClicksOverTime> _getCurWindow() {
-    return [
-      ClicksOverTime(new DateTime.now().add(new Duration(seconds: -15)), 0),
-      ClicksOverTime(new DateTime.now(), 0),
-    ];
-  }
 
   final DeviceManager _deviceManager = new Injector().deviceManager;
 
@@ -92,13 +82,20 @@ class _MyHomePageState extends State<MyHomePage> {
     primaryDeviceSubscription = _deviceManager.primaryDevice().listen((device) {
       deviceConnectSubscription?.cancel();
       heartbeatSubscription?.cancel();
+      debugPrint('new device event');
+      setState(() {
+        _data.clear();
+      });
       if (device.isPresent) {
+        debugPrint('waiting for first data point ...');
+        _setWaiting(true);
+
         debugPrint('Primary Device Set: connecting');
         var btDevice = device.value;
         var bt = blue.FlutterBlue.instance;
         _setDeviceName(device.value.name.toString() ?? '(unnamed device)');
-        deviceConnectSubscription =
-            bt.connect(device.value).listen((deviceState) {
+        deviceConnectSubscription = bt.connect(device.value).listen(
+            (deviceState) {
           if (deviceState == BluetoothDeviceState.connected) {
             debugPrint('Primary Device: connected');
             heartbeatSubscription = btDevice
@@ -109,27 +106,32 @@ class _MyHomePageState extends State<MyHomePage> {
                 .map((hrService) => hrService.characteristics.firstWhere(
                     (char) => char.uuid == blue.Guid(HR_MEASUREMENT)))
                 .asyncExpand((char) {
+                  
               return btDevice
                   .setNotifyValue(char, true)
                   .asStream()
                   .where((success) => success)
                   .asyncExpand((_) => btDevice.onValueChanged(char))
                   .map((valueList) => valueList[1]);
-            }).listen((data) => _addValue(data));
+            }).listen((data) {
+              _addValue(data);
+              _setWaiting(false);
+            },
+                    onError: (e) =>
+                        debugPrint('*** Error **** ' + e.toString()),
+                    onDone: () => debugPrint("*** Done ***"));
           } else {
-            debugPrint(
-                "Primary Device: disconnected [${deviceState.toString()}]");
+            debugPrint("Primary Device: disconnected [${deviceState
+                    .toString()}]");
           }
-        });
+        },
+            onDone: () => debugPrint("*********Done"),
+            onError: (e) => debugPrint('*********E: ' + e.toString()));
       } else {
+        _setWaiting(false);
         _setDeviceName(null);
       }
     });
-  }
-
-  @override
-  void deactivate() {
-    super.deactivate();
   }
 
   @override
@@ -138,7 +140,8 @@ class _MyHomePageState extends State<MyHomePage> {
     primaryDeviceSubscription
         .cancel()
         .then((result) => debugPrint("cancelled sub!"));
-    heartbeatSubscription?.cancel();
+    heartbeatSubscription?.cancel().catchError(
+        (error) => debugPrint('dispose error:=' + error.toString()));
 
     super.dispose();
   }
@@ -147,6 +150,14 @@ class _MyHomePageState extends State<MyHomePage> {
     setState(() {
       _curDeviceName = name;
     });
+  }
+
+  void _setWaiting(bool waiting) {
+    if (_waiting != waiting) {
+      setState(() {
+        _waiting = waiting;
+      });
+    }
   }
 
   void _addValue(int val) {
@@ -158,8 +169,6 @@ class _MyHomePageState extends State<MyHomePage> {
         //_data.removeLast();
       }
 
-      _counter = val;
-      _window = _getCurWindow();
     });
   }
 
@@ -170,84 +179,35 @@ class _MyHomePageState extends State<MyHomePage> {
 
   void _incrementCounter() {
     setState(() {
-      // This call to setState tells the Flutter framework that something has
-      // changed in this State, which causes it to rerun the build method below
-      // so that the display can reflect the updated values. If we changed
-      // _counter without calling setState(), then the build method would not be
-      // called again, and so nothing would appear to happen.
-      _counter++;
-      _data.removeAt(0);
-      _data.removeAt(0);
-      _data.removeAt(0);
-      _data.removeAt(0);
-      _data.removeAt(0);
-      _data.removeAt(0);
-      _data.removeAt(0);
-      //_data.insert(0, new ClicksOverTime(DateTime.now().add(Duration(days:-3)), 30));
-//      _data.insert(0,ClicksOverTime(new DateTime.now(), ran.nextInt(100)));
-//      if (_data.length > 30) {
-//        _data.removeLast();
-//      }
-//
-//      _window = _getCurWindow();
+      var length = (_data.length / 4 - 1);
+      _data.removeRange(0, length.round());
     });
   }
 
   void _selectDevice() {
     _deviceManager.setPrimaryDevice(null);
+    print('tap: select');
     Navigator.push(context,
         new MaterialPageRoute(builder: (context) => new DevicesScreen()));
   }
 
+  void _disconnect() {
+    print('tap: disconnect');
+    _deviceManager.setPrimaryDevice(null);
+  }
+
+  Future<String> get _localPath async {
+    final directory = await path.getApplicationDocumentsDirectory();
+    return directory.path;
+  }
+
+  Future<File> get _localFile async {
+    final path = await _localPath;
+    return new File('$path/counter.txt');
+  }
+
   @override
   Widget build(BuildContext context) {
-    var sampleData = [
-      charts.Series<ClicksOverTime, DateTime>(
-        id: 'Sales',
-        colorFn: (dynamic _, __) => charts.MaterialPalette.blue.shadeDefault,
-        domainFn: (ClicksOverTime clicks, _) => clicks.time,
-        measureFn: (ClicksOverTime clicks, _) => clicks.value,
-        overlaySeries: true,
-        data: _data.length > 0 ? _data : _null_data,
-      ),
-//      charts.Series<ClicksOverTime, DateTime>(
-//        id: 'Window',
-//        domainFn: (ClicksOverTime clicks, _) => clicks.time,
-//        measureFn: (ClicksOverTime clicks, _) => 0,
-//        data: _window,
-//      )
-    ];
-
-debugPrint('start range '+startHighlight.toString());
-
-    var lineChart = new charts.TimeSeriesChart(sampleData,
-        animate: true,
-
-        // Provide a tickProviderSpec which does NOT require that zero is
-        // included.
-        primaryMeasureAxis: new charts.NumericAxisSpec(
-            tickProviderSpec: new charts.BasicNumericTickProviderSpec(
-                zeroBound: false, desiredMinTickCount: 4)),
-        //domainAxis: new charts.DateTimeAxisSpec(),
-//        secondaryMeasureAxis: new charts.DateTimeAxisSpec(
-//          tickProviderSpec:
-//              new charts.AutoDateTimeTickProviderSpec(includeTime: true),
-        behaviors: [
-          new charts.RangeAnnotation([
-            new charts.RangeAnnotationSegment(
-                startHighlight,
-                endHighlight,
-                charts.RangeAnnotationAxisType.domain,
-                color: charts.MaterialPalette.cyan.shadeDefault),
-          ]),
-        ]);
-    var chartwidget = Padding(
-        padding: EdgeInsets.all(32.0),
-        child: SizedBox(
-          height: 200.0,
-          child: lineChart,
-        ));
-
     // This method is rerun every time setState is called, for instance as done
     // by the _incrementCounter method above.
     //
@@ -286,26 +246,99 @@ debugPrint('start range '+startHighlight.toString());
                   new Text(_curDeviceName ?? 'Heartrate device not configured'),
               subtitle: new Text(_curDeviceName == null
                   ? 'Tap to connect via bluetooth'
-                  : 'Tap to connect to a different HR monitor'),
-              onTap: _selectDevice,
+                  : 'Tap to disconnect'),
+              onTap: _curDeviceName == null ? _selectDevice : _disconnect,
             ),
             new Divider(),
-            new Text(
-              'This is your heart rate:',
-            ),
-            new Text(
-              '$_counter',
-              style: Theme.of(context).textTheme.display1,
-            ),
-            chartwidget,
-          ],
+          ]
+              .followedBy(_getChildren())
+              .where((widget) => widget != null)
+              .toList(),
         ),
       ),
       floatingActionButton: new FloatingActionButton(
         onPressed: _incrementCounter,
         tooltip: 'Increment',
-        child: new Icon(Icons.add),
+        child: new Icon(Icons.delete),
       ), // This trailing comma makes auto-formatting nicer for build methods.
     );
+  }
+
+  List<Widget> _getChildren() {
+    if (_data.length == 0) {
+      if (_waiting) {
+        return [
+          Padding(
+              padding: EdgeInsets.all(32.0),
+              child: new Center(
+                  child: new Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                crossAxisAlignment: CrossAxisAlignment.center,
+                children: <Widget>[
+                  new CircularProgressIndicator(),
+                ],
+              ))),
+          new Text(
+            'Waiting for data ...',
+          )
+        ];
+      } else {
+        return [];
+      }
+    } else {
+      var sampleData = [
+        charts.Series<ClicksOverTime, DateTime>(
+          id: 'Sales',
+          colorFn: (dynamic _, __) => charts.MaterialPalette.blue.shadeDefault,
+          domainFn: (ClicksOverTime clicks, _) => clicks.time,
+          measureFn: (ClicksOverTime clicks, _) => clicks.value,
+          overlaySeries: true,
+          data: _data,
+        ),
+//      charts.Series<ClicksOverTime, DateTime>(
+//        id: 'Window',
+//        domainFn: (ClicksOverTime clicks, _) => clicks.time,
+//        measureFn: (ClicksOverTime clicks, _) => 0,
+//        data: _window,
+//      )
+      ];
+
+      var lineChart = new charts.TimeSeriesChart(
+        sampleData,
+        animate: true,
+
+        // Provide a tickProviderSpec which does NOT require that zero is
+        // included.
+        primaryMeasureAxis: new charts.NumericAxisSpec(
+            tickProviderSpec: new charts.BasicNumericTickProviderSpec(
+                zeroBound: false, desiredMinTickCount: 4)),
+        //domainAxis: new charts.DateTimeAxisSpec(),
+//        secondaryMeasureAxis: new charts.DateTimeAxisSpec(
+//          tickProviderSpec:
+//              new charts.AutoDateTimeTickProviderSpec(includeTime: true),
+//        behaviors: [
+//          new charts.RangeAnnotation([
+//            new charts.RangeAnnotationSegment(startHighlight, endHighlight,
+//                charts.RangeAnnotationAxisType.domain,
+//                color: charts.MaterialPalette.cyan.shadeDefault),
+//          ]),
+      );
+      var chartwidget = Padding(
+          padding: EdgeInsets.all(32.0),
+          child: SizedBox(
+            height: 200.0,
+            child: lineChart,
+          ));
+      return <Widget>[
+        new Text(
+          'This is your heart rate:',
+        ),
+        new Text(
+          '$_counter',
+          style: Theme.of(context).textTheme.display1,
+        ),
+        chartwidget,
+      ];
+    }
   }
 }

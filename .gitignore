@@ -11,3 +11,5 @@ packages
 .flutter-plugins
 *.mp4
 *.iml
+flutter_blue/
+screenshot.jpg
